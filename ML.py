@@ -137,7 +137,7 @@ def train_model():
     batch_size = 16
     n_worker = 4
 
-    os.chdir('saved_files/ml2_data/')
+    # os.chdir('saved_files/ml2_data/')
     df_train = pd.read_csv('df.csv')
     os.chdir('images/')
     dataset_train = SHOPEEDataset(df_train, 'train')
