@@ -27,13 +27,17 @@ class EEGRecordsSet:
             self.eeg_classes = json.load(json_file)
         self.records = [None for i in range(len(self.eeg_classes))]
 
+        self.participant_name = input_folder.split('\\')[-1]
+
         filenames = os.listdir(input_folder)
         for filename in filenames:
             if filename.endswith('.EDF'):
-                record = EEGRecord(os.path.join(input_folder, filename), self.eeg_classes)
+                saved_data_dir = os.path.join('saved_files/fragments_data', self.participant_name)
+                record = EEGRecord(os.path.join(input_folder, filename), self.eeg_classes,
+                                   saved_data_dir if os.path.exists(saved_data_dir) else None)
                 self.records[self.eeg_classes[record.get_record_name()]] = record
 
-                self.participant_name = input_folder.split('\\')[-1]
+        self.save_all()
 
     def get_records_number(self):
         return len(self.records)
@@ -54,12 +58,19 @@ class EEGRecordsSet:
         return self.records[0].get_chs()
 
     def get_tg_imgs(self, band):
-        imgs = [[record.get_fragment_tg_img(idx, band)
-                 for idx in range(record.get_fragments_number())]
-                for record in self.records]
-        labels = [[record.get_fragment(0, idx).get_record_name() + '_' + str(idx)
-                   for idx in range(record.get_fragments_number())]
-                  for record in self.records]
+        imgs = []
+        labels = []
+        for record in self.records:
+            imgs.append([])
+            labels.append([])
+
+            for idx in range(record.get_fragments_number()):
+                if band != -1:
+                    imgs[-1].append(record.get_fragment_tg_img(idx, band))
+                else:
+                    imgs[-1].append(record.get_fragment_tg_img_all_bands(idx))
+                labels[-1].append(record.get_fragment(0, idx).get_record_name() + str(idx))
+
         return imgs, labels
 
     def get_ml_tg_imgs(self):
@@ -87,25 +98,31 @@ class EEGRecordsSet:
 
         return ml_data
 
+    def save_all(self):
+        dir = os.path.join('saved_files/fragments_data', self.participant_name)
+        if not os.path.exists(dir):
+            os.mkdir(dir)
+            for record in self.records:
+                record.save_record(dir)
+
 
 class EEGRecord:
-    # eeg_classes = {'FoDo': 0, 'FzDo': 1, 'med': 2, 'FzAft': 3, 'FoAft': 4}
     chs_number = 31
     offset = 10
     fragment_length = 32
 
-    file = None
+    filename = None
     raw, rec_class, rec_name = None, None, None
     fragments = [[]]
 
-    chs = None
+    vis_raw = None
 
-    def __init__(self, path, eeg_classes):
+    def __init__(self, path, eeg_classes, saved_data_dir=None):
         self.raw = self.read_eeg(path)
-        self.chs = self.raw.ch_names
+        self.vis_raw = self.raw.copy()
 
-        self.file = os.path.basename(path)
-        postfix = self.file.split('.')[0].split('_')[1]
+        self.filename = os.path.basename(path)
+        postfix = self.filename.split('.')[0].split('_')[1]
         self.rec_name = postfix
         self.rec_class = eeg_classes[postfix]
 
@@ -120,9 +137,15 @@ class EEGRecord:
         def get_other_chs(idx):
             return lambda: self.get_fragments_by_idx(idx)
 
+        data = None
+        if saved_data_dir is not None:
+            path = os.path.join(saved_data_dir, self.rec_name)
+            with open(path) as json_file:
+                data = json.load(json_file)
+
         self.fragments = [
-            [Fragment(self.raw, ch, self.rec_class, self.rec_name, t_intervals[idx][0], t_intervals[idx][1],
-                      get_other_chs(idx))
+            [Fragment(self.raw, ch, idx, self.rec_class, self.rec_name, t_intervals[idx][0], t_intervals[idx][1],
+                      get_other_chs(idx), data)
              for idx in range(len(t_intervals))]
             for ch in range(self.chs_number)]
 
@@ -163,7 +186,7 @@ class EEGRecord:
         return np.array(self.fragments).flatten().tolist()
 
     def get_chs(self):
-        return self.chs
+        return self.raw.ch_names
 
     def get_record_name(self):
         return self.rec_name
@@ -193,13 +216,13 @@ class EEGRecord:
         b2 = np.array(self.get_fragment_tg(idx, 7))
         b1b2 = b1 + b2
 
-        fig, ax = plt.subplots(figsize=(5.12, 5.12))
+        fig, ax = plt.subplots(num=0, figsize=(5.12, 5.12))
         plot_topomap(deth, self.raw.info, axes=ax, cmap=cm.gray, show=False)
         deth_img = UIPanels.PanelImg(fig).draw()
-        fig, ax = plt.subplots(figsize=(5.12, 5.12))
+        fig, ax = plt.subplots(num=0, figsize=(5.12, 5.12))
         plot_topomap(a1a2, self.raw.info, axes=ax, cmap=cm.gray, show=False)
         a1a2_img = UIPanels.PanelImg(fig).draw()
-        fig, ax = plt.subplots(figsize=(5.12, 5.12))
+        fig, ax = plt.subplots(num=0, figsize=(5.12, 5.12))
         plot_topomap(b1b2, self.raw.info, axes=ax, cmap=cm.gray, show=False)
         b1b2_img = UIPanels.PanelImg(fig).draw()
 
@@ -211,17 +234,28 @@ class EEGRecord:
         rgb_img_data = np.moveaxis(rgb_img_data, 0, -1)
 
         rgb_img = Image.fromarray(rgb_img_data)
+
+        plt.pause(0.001)
+
         return rgb_img
 
     def draw_psd(self, ax):
-        mne.viz.plot_raw_psd(self.raw, fmin=0.25, fmax=40, tmin=self.offset, n_fft=8 * 256, ax=ax)
+        mne.viz.plot_raw_psd(self.vis_raw, fmin=0.25, fmax=40, tmin=self.offset, n_fft=8 * 256, ax=ax)
 
     def hide_ch(self, ch):
-        self.raw.drop_channels(self.get_chs()[ch])
+        self.vis_raw.drop_channels(self.get_chs()[ch])
+
+    def save_record(self, dir):
+        data = {fragment.get_code(): fragment.get_parts_data()
+                for fragment in np.array(self.fragments).flatten()}
+
+        path = os.path.join(dir, self.rec_name)
+        with open(path, 'w') as fp:
+            json.dump(data, fp)
 
 
 class Fragment:
-    raw, ch, rec_class, rec_name = None, None, None, None
+    raw, ch, idx, rec_class, rec_name = None, None, None, None, None
     tmin, tmax = None, None
     parts_number = 4
 
@@ -230,8 +264,8 @@ class Fragment:
 
     get_other_chs = None
 
-    def __init__(self, raw, ch, rec_class, rec_name, tmin, tmax, get_other_chs):
-        self.raw, self.ch, self.rec_class, self.rec_name = raw, ch, rec_class, rec_name
+    def __init__(self, raw, ch, idx, rec_class, rec_name, tmin, tmax, get_other_chs, data=None):
+        self.raw, self.ch, self.idx, self.rec_class, self.rec_name = raw, ch, idx, rec_class, rec_name
         self.tmin, self.tmax = tmin, tmax
         self.get_other_chs = get_other_chs
 
@@ -240,8 +274,10 @@ class Fragment:
                         self.tmin + (i + 1) * interval_length)
                        for i in range(self.parts_number)]
 
-        self.parts = [Part(self.raw, self.ch, t_interval[0], t_interval[1])
-                      for t_interval in t_intervals]
+        parts_data = data[self.get_code()] if data is not None else None
+        self.parts = [Part(self.raw, self.ch, t_intervals[i][0], t_intervals[i][1],
+                           parts_data[i] if parts_data is not None else None)
+                      for i in range(len(t_intervals))]
 
     def set_status(self, status):
         self.status = status
@@ -269,10 +305,18 @@ class Fragment:
             return self.get_parts_avg()
         else:
             data = []
+            valid_chs_pos = []
             chs = self.get_other_chs()
             for ch in chs:
                 if ch.get_status():
                     data.append(ch.get_parts_avg())
+                    valid_chs_pos.append(ch.get_ch_pos())
+
+            pos = self.get_ch_pos()
+            dist = [np.linalg.norm(ch_pos - pos) for ch_pos in valid_chs_pos]
+            data = [x for _, x in sorted(zip(dist, data))]
+            data = data[:3]
+
             avg = np.mean(data, 0)
             return avg
 
@@ -291,6 +335,9 @@ class Fragment:
     def get_record_name(self):
         return self.rec_name
 
+    def get_code(self):
+        return str(self.ch) + '_' + str(self.idx)
+
     def get_tmin(self):
         return self.tmin
 
@@ -300,8 +347,12 @@ class Fragment:
     def get_chs(self):
         return self.raw.ch_names
 
-    def draw_psd(self, ax):
-        mne.viz.plot_raw_psd(self.raw, fmin=0.25, fmax=40, tmin=self.tmin, tmax=self.tmax, n_fft=8 * 256, ax=ax)
+    def get_ch_name(self):
+        return self.raw.ch_names[self.ch]
+
+    def draw_psd(self, ax, draw_all=True):
+        mne.viz.plot_raw_psd(self.raw, fmin=0.25, fmax=40, tmin=self.tmin, tmax=self.tmax, n_fft=8 * 256, ax=ax,
+                             picks=None if draw_all else [self.get_ch_name(), self.get_chs()[15]])
 
 
 class Part:
@@ -311,21 +362,25 @@ class Part:
     tmin, tmax = None, None
     params = []
 
-    def __init__(self, raw, ch, tmin, tmax):
+    def __init__(self, raw, ch, tmin, tmax, params=None):
         self.raw, self.ch = raw, ch
         self.tmin, self.tmax = tmin, tmax
 
-        t_idx = raw.time_as_index([tmin, tmax])
-        signal, times = raw[ch, t_idx[0]:t_idx[1]]
-        me, sd = np.mean(signal), np.std(signal)
+        if params is None:
+            t_idx = raw.time_as_index([tmin, tmax])
+            signal, times = raw[ch, t_idx[0]:t_idx[1]]
+            me, sd = np.mean(signal), np.std(signal)
 
-        band_powers = []
-        for band in self.bands:
-            psd, x = psd_welch(raw, fmin=band[0], fmax=band[1], tmin=tmin, tmax=tmax, n_fft=8 * 256, n_overlap=4 * 256)
-            power = np.trapz(psd[ch], x)
-            band_powers.append(power)
+            band_powers = []
+            for band in self.bands:
+                psd, x = psd_welch(raw, fmin=band[0], fmax=band[1], tmin=tmin, tmax=tmax, n_fft=8 * 256,
+                                   n_overlap=4 * 256)
+                power = np.trapz(psd[ch], x)
+                band_powers.append(power)
 
-        self.params = [me, sd] + band_powers
+            self.params = [me, sd] + band_powers
+        else:
+            self.params = params
 
     def get_norm_params(self):
         np_params = np.array(self.params)

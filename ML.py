@@ -1,46 +1,38 @@
 import pandas as pd
+import matplotlib.pyplot as plt
 import numpy as np
 import sys
-sys.path.append('../input/timm-pytorch-image-models/pytorch-image-models-master')
 import os
-import sys
-import time
 import cv2
-import PIL.Image
-import random
-from sklearn.metrics import accuracy_score
-from tqdm.notebook import tqdm
+
+sys.path.append('../input/timm-pytorch-image-models/pytorch-image-models-master')
+
 import torch
 from torch.utils.data import DataLoader, Dataset
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
-import torchvision.transforms as transforms
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from tqdm.notebook import tqdm
-import matplotlib.pyplot as plt
-import gc
-from sklearn.metrics import roc_auc_score
-
-import seaborn as sns
-from pylab import rcParams
 import timm
 from warnings import filterwarnings
-from sklearn.preprocessing import LabelEncoder
 import math
-import glob
-from sklearn.model_selection import StratifiedKFold, GroupKFold
 filterwarnings("ignore")
 
-device = torch.device('cuda')
+from sklearn.decomposition import PCA
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import confusion_matrix
+
+import pandas as pd
+import seaborn as sns
+from scipy import stats
 
 
 margin = 0.5
 
 
-class SHOPEEDataset(Dataset):
+class PrepsDataset(Dataset):
     def __init__(self, df, mode, transform=None):
 
         self.df = df.reset_index(drop=True)
@@ -88,7 +80,6 @@ class ArcModule(nn.Module):
         cos_th = cos_th.clamp(-1, 1)
         sin_th = torch.sqrt(1.0 - torch.pow(cos_th, 2))
         cos_th_m = cos_th * self.cos_m - sin_th * self.sin_m
-        # print(type(cos_th), type(self.th), type(cos_th_m), type(self.mm))
         cos_th_m = torch.where(cos_th > self.th, cos_th_m, cos_th - self.mm)
 
         cond_v = cos_th - self.th
@@ -97,22 +88,24 @@ class ArcModule(nn.Module):
 
         if labels.dim() == 1:
             labels = labels.unsqueeze(-1)
-        onehot = torch.zeros(cos_th.size()).cuda()
-        labels = labels.type(torch.LongTensor).cuda()
+        onehot = torch.zeros(cos_th.size())
+        labels = labels.type(torch.LongTensor)
         onehot.scatter_(1, labels, 1.0)
         outputs = onehot * cos_th_m + (1.0 - onehot) * cos_th
         outputs = outputs * self.s
         return outputs
 
 
-class SHOPEEDenseNet(nn.Module):
+class PrepsResNet(nn.Module):
 
-    def __init__(self, channel_size, out_feature, dropout=0.5, backbone='densenet121', pretrained=True):
-        super(SHOPEEDenseNet, self).__init__()
+    def __init__(self, channel_size, out_feature, dropout=0.5, backbone='resnet34', pretrained=True):
+        super(PrepsResNet, self).__init__()
         self.backbone = timm.create_model(backbone, pretrained=pretrained)
         self.channel_size = channel_size
+
         self.out_feature = out_feature
-        self.in_features = self.backbone.classifier.in_features
+        self.in_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Identity()
         self.margin = ArcModule(in_features=self.channel_size, out_features=self.out_feature)
         self.bn1 = nn.BatchNorm2d(self.in_features)
         self.dropout = nn.Dropout2d(dropout, inplace=True)
@@ -120,13 +113,18 @@ class SHOPEEDenseNet(nn.Module):
         self.bn2 = nn.BatchNorm1d(self.channel_size)
 
     def forward(self, x, labels=None):
-        features = self.backbone.features(x)
-        features = self.bn1(features)
-        features = self.dropout(features)
-        features = features.view(features.size(0), -1)
-        features = self.fc1(features)
+        features = self.backbone(x)
+        #4 = batch_size = features.shape[0]
+        features = features.view(features.shape[0], -1)
+        # features = self.bn1(features)
+        # features = self.dropout(features)
+
+        # features = self.fc1(features)
+
+        #imgs_number % batch_size = 0
         features = self.bn2(features)
-        features = F.normalize(features)
+
+        # features = F.normalize(features)
         if labels is not None:
             return self.margin(features, labels)
         return features
@@ -134,24 +132,23 @@ class SHOPEEDenseNet(nn.Module):
 
 def train_model():
     init_lr = 3e-4
-    batch_size = 16
-    n_worker = 4
+    batch_size = 4
+    n_worker = 0
 
-    # os.chdir('saved_files/ml2_data/')
-    df_train = pd.read_csv('df.csv')
+    os.chdir('saved_files/ml2_data/')
+    df_train = pd.read_csv('df_train.csv')
     os.chdir('images/')
-    dataset_train = SHOPEEDataset(df_train, 'train')
+    dataset_train = PrepsDataset(df_train, 'train')
 
-    model = SHOPEEDenseNet(512, df_train.label_group.nunique())
+    model = PrepsResNet(512, df_train.label_group.nunique())
     model.train()
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=init_lr)
 
-    train_loader = torch.utils.data.DataLoader(dataset_train, batch_size=batch_size, shuffle=True,
-                                               num_workers=n_worker)
+    train_loader = torch.utils.data.DataLoader(dataset_train, batch_size=batch_size, shuffle=True, num_workers=n_worker)
 
-    for epoch in range(2):  # loop over the dataset multiple times
+    for epoch in range(6):  # loop over the dataset multiple times
 
         running_loss = 0.0
         for i, data in enumerate(train_loader, 0):
@@ -161,26 +158,142 @@ def train_model():
             # zero the parameter gradients
             optimizer.zero_grad()
 
+            #outputs = model(inputs, labels): train(5 classes), model(inputs) : test(512 features)
+
             # forward + backward + optimize
-            outputs = model(inputs)
+            outputs = model(inputs, labels)
+
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
 
             # print statistics
             running_loss += loss.item()
-            if i % 2 == 1:  # print every 2000 mini-batches
-                print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 2000:.3f}')
+            if i % 20 == 1:  # print every 2000 mini-batches
+                print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 20:.3f}')
                 running_loss = 0.0
 
     print('Finished Training')
 
-    for i in range(2):
-        f, axarr = plt.subplots(1, 5)
-        for p in range(5):
-            idx = i * 5 + p
-            img, label = dataset_train[idx]
-            axarr[p].imshow(np.array(img.transpose(0, 1).transpose(1, 2).squeeze(), np.int32))
-            axarr[p].set_title(label.item())
+    torch.save(model.state_dict(), '../model')
 
+
+def model_process():
+    batch_size = 1
+    n_worker = 0
+
+    os.chdir('saved_files/ml2_data/')
+    df_train = pd.read_csv('df_train.csv')
+    df_test = pd.read_csv('df_test.csv')
+    os.chdir('images/')
+    dataset_train = PrepsDataset(df_train, 'process')
+    dataset_test = PrepsDataset(df_test, 'process')
+
+    model = PrepsResNet(512, df_train.label_group.nunique())
+    model.load_state_dict(torch.load('../model'))
+    model.eval()
+
+    process_loader = torch.utils.data.DataLoader(dataset_train, batch_size=batch_size, shuffle=False, num_workers=n_worker)
+    features512_train = get_features(process_loader, model)
+    np.savetxt('../features512_train.csv', features512_train, delimiter=',')
+
+    process_loader = torch.utils.data.DataLoader(dataset_test, batch_size=batch_size, shuffle=False, num_workers=n_worker)
+    features512_test = get_features(process_loader, model)
+    np.savetxt('../features512_test.csv', features512_test, delimiter=',')
+
+
+def get_features(process_loader, model):
+    res = []
+    for i, data in enumerate(process_loader, 0):
+        inputs, labels = data
+        outputs = model(inputs)
+
+        print(model(inputs, labels))
+
+        outputs = list(outputs.detach().numpy()[0])
+        outputs.append(labels.detach().numpy()[0])
+        res.append(outputs)
+
+    res = np.array(res)
+
+    print(res)
+    print(res.shape)
+
+    return res
+
+
+def rf_test():
+    os.chdir('saved_files/ml2_data/')
+    df_train = pd.read_csv('features512_train.csv', header=None)
+    df_test = pd.read_csv('features512_test.csv', header=None)
+
+    train_data = np.array(df_train)
+    x_train, y_train = train_data[:, :df_train.shape[1] - 1], train_data[:, df_train.shape[1] - 1]
+    test_data = np.array(df_test)
+    x_test, y_test = test_data[:, :df_test.shape[1] - 1], test_data[:, df_test.shape[1] - 1]
+
+    pca = PCA(n_components=3)
+    pca.fit(x_train)
+    print(pca.explained_variance_ratio_)
+
+    pc_train = pca.transform(x_train)
+    pc_test = pca.transform(x_test)
+
+    data_vis(x_test, y_test, pc_test)
+
+    # {'bootstrap': False, 'max_depth': 1, 'max_features': 'sqrt', 'min_samples_leaf': 2, 'min_samples_split': 34, 'n_estimators': 200}
+
+    rfc = RandomForestClassifier(n_estimators=200, min_samples_split=34, min_samples_leaf=2, max_features='sqrt', max_depth=1, bootstrap=False)
+    rfc.fit(x_train, y_train)
+    print(rfc.score(x_train, y_train))
+    print(rfc.score(x_test, y_test))
+
+    predictions = rfc.predict(x_test)
+    print(predictions)
+    cm = confusion_matrix(predictions, y_test)
+    print(cm)
+
+
+def rf_tuning(x_train, y_train):
+    rfc_tuning = RandomForestClassifier()
+
+    n_estimators = [int(x) for x in np.linspace(start=100, stop=1000, num=10)]
+    max_features = ['log2', 'sqrt']
+    max_depth = [int(x) for x in np.linspace(start=1, stop=15, num=15)]
+    min_samples_split = [int(x) for x in np.linspace(start=2, stop=50, num=10)]
+    min_samples_leaf = [int(x) for x in np.linspace(start=2, stop=50, num=10)]
+    bootstrap = [True, False]
+    param_grid = {'n_estimators': n_estimators,
+                  'max_features': max_features,
+                  'max_depth': max_depth,
+                  'min_samples_split': min_samples_split,
+                  'min_samples_leaf': min_samples_leaf,
+                  'bootstrap': bootstrap}
+    gs = GridSearchCV(rfc_tuning, param_grid, cv=3, verbose=1, n_jobs=-1)
+    gs.fit(x_train, y_train)
+    print(gs.best_params_)
+
+
+def data_vis(x, y, pc):
+    plt.figure()
+    df = pd.DataFrame(x)
+    corr = df.corr()
+    sns.heatmap(corr)
+    plt.show()
+
+    res = [[] for i in range(int(max(y)) + 1)]
+    for i in range(len(y)):
+        res[int(y[i])].append(pc[i])
+    res = [np.array(res[i]) for i in range(len(res))]
+    res = [pd.DataFrame(res[i]) for i in range(len(res))]
+    res = [res[i][(np.abs(stats.zscore(res[i])) < 3).all(axis=1)] for i in range(len(res))]
+    #res = [res[i].sample(n=100) for i in range(len(res))]
+    res = [res[i].to_numpy() for i in range(len(res))]
+
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+
+    for i in range(len(res)):
+        ax.scatter(res[i][:, 0], res[i][:, 1], res[i][:, 2])
+        print(res[i].shape)
     plt.show()

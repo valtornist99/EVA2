@@ -1,18 +1,6 @@
-import tensorflow as tf
-
-from keras.applications import ResNet50
-from keras.models import Sequential
-from keras.layers import Dense
-
-import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 import numpy as np
-
-from sklearn.decomposition import PCA
-import pandas as pd
-import seaborn as sns
-from scipy import stats
 
 import io
 import os
@@ -24,64 +12,6 @@ import easygui
 
 import Fragment
 import ML
-
-
-def ml_imgs(records_set):
-    model = tf.keras.applications.resnet50.ResNet50(include_top=False,
-                                                    input_shape=(300, 300, 3),
-                                                    weights='imagenet', pooling='avg')
-
-    model.summary()
-    model.compile()
-
-    img = records_set.get_record(0).get_fragment_tg_img(0, 4)
-
-    plt.figure()
-    plt.imshow(img)
-    plt.show()
-
-    print(img.size)
-
-    img = img.convert('RGB')
-
-    img_data = np.asarray(img)
-    img_data = np.expand_dims(img_data, axis=0)
-    predictions = model.predict(img_data, verbose=0)
-
-    print(predictions.shape)
-
-
-def ml_test(ml_data):
-    data = np.array(ml_data)
-    x = data[:, :35]
-    y = data[:, 35]
-
-    plt.figure()
-    df = pd.DataFrame(x)
-    corr = df.corr()
-    sns.heatmap(corr)
-    plt.show()
-
-    pca = PCA(n_components=3)
-    pc = pca.fit_transform(x)
-    print(pca.explained_variance_ratio_)
-
-    res = [[] for i in range(int(max(y)) + 1)]
-    for i in range(len(y)):
-        res[int(y[i])].append(pc[i])
-    res = [np.array(res[i]) for i in range(len(res))]
-    res = [pd.DataFrame(res[i]) for i in range(len(res))]
-    res = [res[i][(np.abs(stats.zscore(res[i])) < 3).all(axis=1)] for i in range(len(res))]
-    res = [res[i].sample(n=100) for i in range(len(res))]
-    res = [res[i].to_numpy() for i in range(len(res))]
-
-    fig = plt.figure()
-    ax = fig.add_subplot(projection='3d')
-
-    for i in range(len(res)):
-        ax.scatter(res[i][:, 0], res[i][:, 1], res[i][:, 2])
-        print(res[i].shape)
-    plt.show()
 
 
 class MenuPanel:
@@ -139,7 +69,7 @@ class MenuPanel:
     def show_tg(self):
         main_panel = MainTGPanel(self.records_set, self.video_path, self.video_offsets)
 
-        band = easygui.indexbox('Choose band', 'Frequency band', ['Me', 'Sd', 'De', 'Th', 'A1', 'A2', 'B1', 'B2'])
+        band = easygui.indexbox('Choose band', 'Frequency band', ['Me', 'Sd', 'De', 'Th', 'A1', 'A2', 'B1', 'B2', 'All'])
         ch = easygui.indexbox('Choose channel', 'EEG channel', [
             "Fp1", "Fpz", "Fp2", "F7", "F3", "Fz",
             "F4", "F8", "FT7", "FC3", "FCz", "FC4", "FT8",
@@ -147,6 +77,9 @@ class MenuPanel:
             "CP3", "CPz", "CP4", "TP8", "T5",
             "P3", "Pz", "P4", "T6", "O1", "Oz", "O2"
         ])
+
+        if band == 8:
+            band = -1
 
         main_panel.show(band, ch)
 
@@ -176,7 +109,10 @@ class MenuPanel:
         df.to_csv(df_path, mode='a', header=not os.path.exists(df_path), index=False)
 
     def test(self):
-        ML.train_model()
+        functions = [ML.train_model, ML.model_process, ML.rf_test]
+
+        choice = easygui.indexbox('Choose function', 'ML functions', ['Process images', 'Process features', 'Classify features'])
+        functions[choice]()
 
 
 class PSDPanel:
@@ -235,13 +171,12 @@ class MainTGPanel:
                                            self.video_offsets[fragment.get_record_name()]).show()
 
         imgs, labels = self.records_set.get_tg_imgs(band)
-
         fig, axes = plt.subplots(self.records_set.get_records_number(), self.records_set.get_max_fragments_number())
         for i in range(len(axes)):
             for j in range(len(axes[i])):
                 # axes[i][j].axis('off')
                 if j < len(imgs[i]):
-                    axes[i][j].set_xlabel(labels[i][j])
+                    axes[i][j].set_xlabel(labels[i][j], fontsize=6)
 
                     tg_button = Button(axes[i][j], '', image=imgs[i][j])
                     tg_button.on_clicked(fragment_clicked(i, j))
@@ -257,19 +192,24 @@ class FragmentPanel:
     fragment = None
     video_path, video_offset = None, 0
 
+    show_all_status = True
+
     fig, gs = None, None
     parts_ax, table_ax, psd_ax, video_ax = None, None, None, None
 
     choose_button, choose_button_ax = None, None
     drop_button, drop_button_ax = None, None
     drop_all_button, drop_all_button_ax = None, None
+    show_all_button, show_all_button_ax = None, None
+
     time_slider, time_slider_ax = None, None
 
     video, cur_img = None, None
 
-    def __init__(self, fragment, video_path, video_offset):
+    def __init__(self, fragment, video_path, video_offset, show_all_status=True):
         self.fragment = fragment
         self.video_path, self.video_offset = video_path, video_offset
+        self.show_all_status = show_all_status
 
         self.fig = plt.figure()
         self.gs = self.fig.add_gridspec(20, 30)
@@ -282,6 +222,8 @@ class FragmentPanel:
         self.choose_button_ax = self.fig.add_subplot(self.gs[0:1, 21:23])
         self.drop_button_ax = self.fig.add_subplot(self.gs[0:1, 23:25])
         self.drop_all_button_ax = self.fig.add_subplot(self.gs[0:1, 25:27])
+        self.show_all_button_ax = self.fig.add_subplot(self.gs[0:1, 27:29])
+
         self.time_slider_ax = self.fig.add_subplot(self.gs[19, 0:10])
 
         self.draw_parts()
@@ -321,7 +263,7 @@ class FragmentPanel:
 
     def draw_psd(self):
         ax = self.psd_ax
-        self.fragment.draw_psd(ax)
+        self.fragment.draw_psd(ax, draw_all=self.show_all_status)
 
     def draw_video(self):
         ax = self.video_ax
@@ -357,13 +299,16 @@ class FragmentPanel:
         self.drop_all_button = Button(self.drop_all_button_ax, 'Drop all')
         self.drop_all_button.on_clicked(lambda _: self.drop_chs())
 
+        self.show_all_button = Button(self.show_all_button_ax, 'Hide all' if self.show_all_status else 'Show all')
+        self.show_all_button.on_clicked(lambda _: self.show_all())
+
         self.time_slider = Slider(self.time_slider_ax, 'Time', self.fragment.get_tmin(), self.fragment.get_tmax())
         self.time_slider.on_changed(lambda _: self.update_video(self.time_slider.val))
 
     def choose_ch(self):
         choice = easygui.indexbox('Choose channel', 'EEG channel', self.fragment.get_raw().ch_names)
         new_fragment = self.fragment.get_other_chs()[choice]
-        FragmentPanel(new_fragment, self.video_path, self.video_offset).show()
+        FragmentPanel(new_fragment, self.video_path, self.video_offset, show_all_status=self.show_all_status).show()
         plt.close(self.fig)
 
     def drop_chs(self, ch=None):
@@ -372,6 +317,10 @@ class FragmentPanel:
                 ch.set_status(False)
         else:
             ch.set_status(False)
+
+    def show_all(self):
+        FragmentPanel(self.fragment, self.video_path, self.video_offset, show_all_status=not self.show_all_status).show()
+        plt.close(self.fig)
 
     def show(self):
         plt.get_current_fig_manager().window.state("zoomed")
@@ -385,8 +334,6 @@ class PanelImg:
         self.fig = fig
 
     def draw(self):
-        matplotlib.use('Agg')
-
         buf = io.BytesIO()
         self.fig.savefig(buf)
         buf.seek(0)
