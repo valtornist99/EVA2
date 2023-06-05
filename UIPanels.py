@@ -109,10 +109,12 @@ class MenuPanel:
         df.to_csv(df_path, mode='a', header=not os.path.exists(df_path), index=False)
 
     def test(self):
-        functions = [ML.train_model, ML.model_process, ML.rf_test]
+        ML.rf_test_var1()
 
-        choice = easygui.indexbox('Choose function', 'ML functions', ['Process images', 'Process features', 'Classify features'])
-        functions[choice]()
+        # functions = [self.ml_scheme_1, self.ml_scheme_2, ML.train_model, ML.model_process, ML.rf_test]
+        #
+        # choice = easygui.indexbox('Choose function', 'ML functions', ['Save vectors', 'Save images', 'Process images', 'Process features', 'Classify features'])
+        # functions[choice]()
 
 
 class PSDPanel:
@@ -174,7 +176,6 @@ class MainTGPanel:
         fig, axes = plt.subplots(self.records_set.get_records_number(), self.records_set.get_max_fragments_number())
         for i in range(len(axes)):
             for j in range(len(axes[i])):
-                # axes[i][j].axis('off')
                 if j < len(imgs[i]):
                     axes[i][j].set_xlabel(labels[i][j], fontsize=6)
 
@@ -299,7 +300,7 @@ class FragmentPanel:
         self.drop_all_button = Button(self.drop_all_button_ax, 'Drop all')
         self.drop_all_button.on_clicked(lambda _: self.drop_chs())
 
-        self.show_all_button = Button(self.show_all_button_ax, 'Hide all' if self.show_all_status else 'Show all')
+        self.show_all_button = Button(self.show_all_button_ax, 'Pattern' if self.show_all_status else self.fragment.get_record_name())
         self.show_all_button.on_clicked(lambda _: self.show_all())
 
         self.time_slider = Slider(self.time_slider_ax, 'Time', self.fragment.get_tmin(), self.fragment.get_tmax())

@@ -12,13 +12,12 @@ import pandas as pd
 import os
 import json
 from PIL import Image
+import random
 
 import UIPanels
 
 
 class EEGRecordsSet:
-    eeg_classes = {'FoDo': 0, 'FzDo': 1}
-
     records = []
     participant_name = ''
 
@@ -79,9 +78,10 @@ class EEGRecordsSet:
         imgs, labels, classes = [], [], []
 
         for record in self.records:
-            for idx in range(record.get_fragments_number()):
+            for i in range(30):
+                idx = random.randint(0, record.get_fragments_number() - 1)
                 imgs.append(record.get_fragment_tg_img_all_bands(idx))
-                labels.append(self.participant_name + '_' + record.get_record_name() + '_' + str(idx) + '.jpg')
+                labels.append(self.participant_name + '_' + record.get_record_name() + '_' + str(i) + '.jpg')
                 classes.append(record.get_record_class())
 
         df_data = [[labels[i], classes[i]] for i in range(len(labels))]
@@ -109,6 +109,7 @@ class EEGRecordsSet:
 class EEGRecord:
     chs_number = 31
     offset = 10
+    med_offset = 600
     fragment_length = 32
 
     filename = None
@@ -118,13 +119,13 @@ class EEGRecord:
     vis_raw = None
 
     def __init__(self, path, eeg_classes, saved_data_dir=None):
-        self.raw = self.read_eeg(path)
-        self.vis_raw = self.raw.copy()
-
         self.filename = os.path.basename(path)
         postfix = self.filename.split('.')[0].split('_')[1]
         self.rec_name = postfix
         self.rec_class = eeg_classes[postfix]
+
+        self.raw = self.read_eeg(path)
+        self.vis_raw = self.raw.copy()
 
         interval_length = self.fragment_length
         tmin = 0
@@ -154,6 +155,9 @@ class EEGRecord:
         raw.describe()
 
         raw.drop_channels(raw.ch_names[31:])
+
+        if self.rec_name == 'med':
+            self.offset += self.med_offset
         raw.crop(tmin=self.offset)
 
         montage_design = ["Fp1", "Fpz", "Fp2", "F7", "F3", "Fz",
@@ -194,26 +198,29 @@ class EEGRecord:
     def get_record_class(self):
         return self.rec_class
 
-    def get_fragment_tg(self, idx, band):
-        band_power = [self.get_fragment(i, idx).get_parts_avg_adjusted()[band] for i in range(self.chs_number)]
+    def get_fragment_tg(self, idx, band, exclude_part=None):
+        band_power = [self.get_fragment(i, idx).get_parts_avg_adjusted(exclude_idx=exclude_part)[band] for i in range(self.chs_number)]
         return band_power
 
-    def get_fragment_tg_img(self, idx, band):
+    def get_fragment_tg_img(self, idx, band, exclude_part=None):
         fig, ax = plt.subplots(figsize=(3, 3))
-        band_power = self.get_fragment_tg(idx, band)
+        band_power = self.get_fragment_tg(idx, band, exclude_part=exclude_part)
         plot_topomap(band_power, self.raw.info, axes=ax, cmap=cm.viridis, show=False)
         img = UIPanels.PanelImg(fig).draw()
         return img
 
     def get_fragment_tg_img_all_bands(self, idx):
-        de = np.array(self.get_fragment_tg(idx, 2))
-        th = np.array(self.get_fragment_tg(idx, 3))
+        exclude_part = random.randint(0, 3)
+        de = np.array(self.get_fragment_tg(idx, 2, exclude_part=exclude_part))
+        th = np.array(self.get_fragment_tg(idx, 3, exclude_part=exclude_part))
         deth = de + th
-        a1 = np.array(self.get_fragment_tg(idx, 4))
-        a2 = np.array(self.get_fragment_tg(idx, 5))
+        exclude_part = random.randint(0, 3)
+        a1 = np.array(self.get_fragment_tg(idx, 4, exclude_part=exclude_part))
+        a2 = np.array(self.get_fragment_tg(idx, 5, exclude_part=exclude_part))
         a1a2 = a1 + a2
-        b1 = np.array(self.get_fragment_tg(idx, 6))
-        b2 = np.array(self.get_fragment_tg(idx, 7))
+        exclude_part = random.randint(0, 3)
+        b1 = np.array(self.get_fragment_tg(idx, 6, exclude_part=exclude_part))
+        b2 = np.array(self.get_fragment_tg(idx, 7, exclude_part=exclude_part))
         b1b2 = b1 + b2
 
         fig, ax = plt.subplots(num=0, figsize=(5.12, 5.12))
@@ -240,7 +247,7 @@ class EEGRecord:
         return rgb_img
 
     def draw_psd(self, ax):
-        mne.viz.plot_raw_psd(self.vis_raw, fmin=0.25, fmax=40, tmin=self.offset, n_fft=8 * 256, ax=ax)
+        mne.viz.plot_raw_psd(self.vis_raw, fmin=0.25, fmax=40, n_fft=8 * 256, ax=ax)
 
     def hide_ch(self, ch):
         self.vis_raw.drop_channels(self.get_chs()[ch])
@@ -297,19 +304,22 @@ class Fragment:
     def get_parts_data(self):
         return [part.get_params() for part in self.parts]
 
-    def get_parts_avg(self):
-        return np.mean(self.get_parts_data(), 0)
+    def get_parts_avg(self, exclude_idx=None):
+        data = self.get_parts_data()
+        if exclude_idx is not None:
+            del data[exclude_idx]
+        return np.mean(data, 0)
 
-    def get_parts_avg_adjusted(self):
+    def get_parts_avg_adjusted(self, exclude_idx=None):
         if self.status:
-            return self.get_parts_avg()
+            return self.get_parts_avg(exclude_idx=exclude_idx)
         else:
             data = []
             valid_chs_pos = []
             chs = self.get_other_chs()
             for ch in chs:
                 if ch.get_status():
-                    data.append(ch.get_parts_avg())
+                    data.append(ch.get_parts_avg(exclude_idx=exclude_idx))
                     valid_chs_pos.append(ch.get_ch_pos())
 
             pos = self.get_ch_pos()

@@ -1,4 +1,5 @@
 import pandas as pd
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import sys
@@ -140,7 +141,9 @@ def train_model():
     os.chdir('images/')
     dataset_train = PrepsDataset(df_train, 'train')
 
-    model = PrepsResNet(512, df_train.label_group.nunique())
+    #model = PrepsResNet(512, df_train.label_group.nunique())
+    model = timm.create_model('resnet34', pretrained=True)
+    model.fc = nn.Linear(512, 5)
     model.train()
 
     criterion = nn.CrossEntropyLoss()
@@ -148,34 +151,61 @@ def train_model():
 
     train_loader = torch.utils.data.DataLoader(dataset_train, batch_size=batch_size, shuffle=True, num_workers=n_worker)
 
-    for epoch in range(6):  # loop over the dataset multiple times
+    for epoch in range(3):
 
-        running_loss = 0.0
+        losses = []
         for i, data in enumerate(train_loader, 0):
-            # get the inputs; data is a list of [inputs, labels]
             inputs, labels = data
 
-            # zero the parameter gradients
             optimizer.zero_grad()
 
-            #outputs = model(inputs, labels): train(5 classes), model(inputs) : test(512 features)
-
-            # forward + backward + optimize
-            outputs = model(inputs, labels)
+            #outputs = model(inputs, labels)
+            outputs = model(inputs)
 
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
 
-            # print statistics
-            running_loss += loss.item()
-            if i % 20 == 1:  # print every 2000 mini-batches
-                print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 20:.3f}')
-                running_loss = 0.0
+            losses.append(loss.item())
+
+        print('Epoch: ' + str(epoch))
+        print('Train loss: ' + str(np.mean(losses)))
+        valid_preps_model(model)
 
     print('Finished Training')
 
     torch.save(model.state_dict(), '../model')
+
+
+def valid_preps_model(model):
+    batch_size = 1
+    n_worker = 0
+
+    df_valid = pd.read_csv('../df_test.csv')
+    dataset_valid = PrepsDataset(df_valid, 'valid')
+
+    valid_loader = torch.utils.data.DataLoader(dataset_valid, batch_size=batch_size, shuffle=True, num_workers=n_worker)
+
+    criterion = nn.CrossEntropyLoss()
+
+    model.eval()
+
+    losses = []
+    with torch.no_grad():
+        for i, data in enumerate(valid_loader, 0):
+            inputs, labels = data
+            outputs = model(inputs)
+
+            predicted_class = F.softmax(model(inputs), -1).detach().numpy()[0].argmax()
+            print(predicted_class)
+            print("Label = " + str(labels.detach().numpy()[0]))
+
+            loss = criterion(outputs, labels)
+            losses.append(loss.item())
+
+    model.train()
+
+    print('Valid loss: ' + str(np.mean(losses)))
 
 
 def model_process():
@@ -189,7 +219,10 @@ def model_process():
     dataset_train = PrepsDataset(df_train, 'process')
     dataset_test = PrepsDataset(df_test, 'process')
 
-    model = PrepsResNet(512, df_train.label_group.nunique())
+    #model = PrepsResNet(512, df_train.label_group.nunique())
+    model = timm.create_model('resnet34', pretrained=True)
+    model.fc = nn.Linear(512, 5)
+
     model.load_state_dict(torch.load('../model'))
     model.eval()
 
@@ -208,18 +241,50 @@ def get_features(process_loader, model):
         inputs, labels = data
         outputs = model(inputs)
 
-        print(model(inputs, labels))
+        outputs_val = list(outputs.detach().numpy()[0])
+        label = labels.detach().numpy()[0]
 
-        outputs = list(outputs.detach().numpy()[0])
-        outputs.append(labels.detach().numpy()[0])
-        res.append(outputs)
+        outputs_val.append(label)
+        res.append(outputs_val)
 
     res = np.array(res)
 
-    print(res)
-    print(res.shape)
-
     return res
+
+
+def rf_test_var1():
+    os.chdir('saved_files')
+    df_train = pd.read_csv('np_miheev2.csv', header=None)
+    df_test = pd.read_csv('np_miheev2.csv', header=None)
+
+    # df_train = df_train.sample(frac=0.9)
+    # df_test = df_test.drop(df_train.index)
+
+    train_data = np.array(df_train)
+    x_train, y_train = train_data[:, :df_train.shape[1] - 1], train_data[:, df_train.shape[1] - 1]
+    test_data = np.array(df_test)
+    x_test, y_test = test_data[:, :df_test.shape[1] - 1], test_data[:, df_test.shape[1] - 1]
+
+    #rf_tuning(x_train, y_train)
+
+    # n_estimators=700, min_samples_split=12, min_samples_leaf=2, max_features='sqrt', max_depth=13, bootstrap=False
+    rfc = RandomForestClassifier(n_estimators=700, min_samples_split=12, min_samples_leaf=2, max_features='sqrt', max_depth=13, bootstrap=False)
+    rfc.fit(x_train, y_train)
+    print(rfc.score(x_train, y_train))
+    print(rfc.score(x_test, y_test))
+
+    predictions = rfc.predict(x_test)
+    print(predictions)
+    cm = confusion_matrix(y_test, predictions)
+    print(cm)
+
+    cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+    plt.figure()
+    sns.heatmap(cm, annot=True, fmt='.2f', cmap='Reds',
+                xticklabels=['EO1', 'EC1', 'MED', 'EC2', 'EO2'],
+                yticklabels=['EO1', 'EC1', 'MED', 'EC2', 'EO2'])
+    plt.show()
 
 
 def rf_test():
@@ -239,19 +304,30 @@ def rf_test():
     pc_train = pca.transform(x_train)
     pc_test = pca.transform(x_test)
 
+    data_vis(x_train, y_train, pc_train)
     data_vis(x_test, y_test, pc_test)
 
-    # {'bootstrap': False, 'max_depth': 1, 'max_features': 'sqrt', 'min_samples_leaf': 2, 'min_samples_split': 34, 'n_estimators': 200}
+    # rf_tuning(x_train, y_train)
 
-    rfc = RandomForestClassifier(n_estimators=200, min_samples_split=34, min_samples_leaf=2, max_features='sqrt', max_depth=1, bootstrap=False)
+    # {'n_estimators': 400, 'min_samples_split': 23, 'min_samples_leaf': 12, 'max_features': 'sqrt', 'max_depth': 11, 'bootstrap': True} C1
+
+    rfc = RandomForestClassifier(n_estimators=400, min_samples_split=23, min_samples_leaf=12, max_features='sqrt', max_depth=11, bootstrap=True)
     rfc.fit(x_train, y_train)
     print(rfc.score(x_train, y_train))
     print(rfc.score(x_test, y_test))
 
     predictions = rfc.predict(x_test)
     print(predictions)
-    cm = confusion_matrix(predictions, y_test)
+    cm = confusion_matrix(y_test, predictions)
     print(cm)
+
+    cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+    plt.figure()
+    sns.heatmap(cm, annot=True, fmt='.2f', cmap='Reds',
+                xticklabels=['EO1', 'EC1', 'MED', 'EC2', 'EO2'],
+                yticklabels=['EO1', 'EC1', 'MED', 'EC2', 'EO2'])
+    plt.show()
 
 
 def rf_tuning(x_train, y_train):
@@ -263,15 +339,21 @@ def rf_tuning(x_train, y_train):
     min_samples_split = [int(x) for x in np.linspace(start=2, stop=50, num=10)]
     min_samples_leaf = [int(x) for x in np.linspace(start=2, stop=50, num=10)]
     bootstrap = [True, False]
-    param_grid = {'n_estimators': n_estimators,
+    param_dist = {'n_estimators': n_estimators,
                   'max_features': max_features,
                   'max_depth': max_depth,
                   'min_samples_split': min_samples_split,
                   'min_samples_leaf': min_samples_leaf,
                   'bootstrap': bootstrap}
-    gs = GridSearchCV(rfc_tuning, param_grid, cv=3, verbose=1, n_jobs=-1)
-    gs.fit(x_train, y_train)
-    print(gs.best_params_)
+    rs = RandomizedSearchCV(rfc_tuning,
+                            param_dist,
+                            n_iter=100,
+                            cv=3,
+                            verbose=1,
+                            n_jobs=-1,
+                            random_state=0)
+    rs.fit(x_train, y_train)
+    print(rs.best_params_)
 
 
 def data_vis(x, y, pc):
