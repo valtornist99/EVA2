@@ -107,7 +107,7 @@ class EEGRecordsSet:
 
 
 class EEGRecord:
-    chs_number = 31
+    chs_number = 8
     offset = 10
     med_offset = 600
     fragment_length = 32
@@ -154,17 +154,24 @@ class EEGRecord:
         raw = read_raw_edf(path, eog=(), preload=True)
         raw.describe()
 
-        raw.drop_channels(raw.ch_names[31:])
+        raw.drop_channels(raw.ch_names[self.chs_number:])
 
         if self.rec_name == 'med':
             self.offset += self.med_offset
         raw.crop(tmin=self.offset)
 
-        montage_design = ["Fp1", "Fpz", "Fp2", "F7", "F3", "Fz",
-                          "F4", "F8", "FT7", "FC3", "FCz", "FC4", "FT8",
-                          "T3", "C3", "Cz", "C4", "T4", "TP7",
-                          "CP3", "CPz", "CP4", "TP8", "T5",
-                          "P3", "Pz", "P4", "T6", "O1", "Oz", "O2"]
+        montage_design = []
+        if self.chs_number == 31:
+            montage_design = ["Fp1", "Fpz", "Fp2", "F7", "F3", "Fz",
+                              "F4", "F8", "FT7", "FC3", "FCz", "FC4", "FT8",
+                              "T3", "C3", "Cz", "C4", "T4", "TP7",
+                              "CP3", "CPz", "CP4", "TP8", "T5",
+                              "P3", "Pz", "P4", "T6", "O1", "Oz", "O2"]
+        elif self.chs_number == 8:
+            montage_design = ["Fp1", "Fp2",
+                              "C3", "C4",
+                              "O1", "O2",
+                              "T3", "T4"]
         new_ch_names = {raw.ch_names[i]: montage_design[i] for i in range(len(raw.ch_names))}
         raw.rename_channels(new_ch_names)
         raw.describe()
